@@ -1,0 +1,6 @@
+*.html
+*.pyc
+*.log
+*.bin
+venv/*
+.venv/*
