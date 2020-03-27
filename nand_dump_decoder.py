@@ -512,7 +512,7 @@ def nxp_imx28_error_correction(infiles, outfile, config):
     """Do some error correction"""
 
     # initialize BCH decoder
-    bch = bchlib.BCH(config['ecc_polynom'], config['ecc_errors'], True)
+    bch = bchlib.BCH(config['ecc_polynom'], config['ecc_errors'], False)
 
     # open output file
     fout = open(outfile, "wb")
@@ -621,7 +621,7 @@ def nxp_imx28_error_correction(infiles, outfile, config):
                 start_data = 0
                 end_data = start_data + config['sectorsize'] + \
                            config['metadata_size']
-                sector_data = page_data[start_data:end_data]
+                sector_data = reverse_bits(page_data[start_data:end_data])
 
                 # # calculate ECC
                 # calc_ecc = bch.encode(sector_data)
@@ -638,8 +638,7 @@ def nxp_imx28_error_correction(infiles, outfile, config):
                     if len(corrected[1]) == expected_size:
                         # write corrected sector data to output file
                         # skip metadata for first sector in page
-                        output = corrected[1]
-                        fout.write(output[config['metadata_size']:])
+                        fout.write(reverse_bits(corrected[1][config['metadata_size']:]))
 
                         # increment good sector count
                         good_sector_count += 1
@@ -696,7 +695,7 @@ def nxp_imx28_error_correction(infiles, outfile, config):
                                  config['metadata_size'] + \
                                  sector * int(config['ecc_bytes_per_sector'])
                     end_data = start_data + config['sectorsize']
-                    sector_data = page_data[start_data:end_data]
+                    sector_data = reverse_bits(page_data[start_data:end_data])
 
                     # get ECC of current sector
                     start_ecc = start_data + config['sectorsize']
@@ -714,7 +713,7 @@ def nxp_imx28_error_correction(infiles, outfile, config):
 
                         if len(corrected[1]) == config['sectorsize']:
                             # write corrected sector data to output file
-                            fout.write(corrected[1])
+                            fout.write(reverse_bits(corrected[1]))
 
                             # increment good sector count
                             good_sector_count += 1
