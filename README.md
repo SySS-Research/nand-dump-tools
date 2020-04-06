@@ -8,6 +8,12 @@ The **NAND Dump Encoder** can be used to create raw NAND flash memory images fro
 
 The NAND Dump Tools are based on and inspired by the open source software tool [PMECC Reader and Decoder](https://www.mickaelwalter.fr/2018/06/08/dumping-a-slc-nand-flash-with-atmel-pmecc/) by Mickaël Walter ([@MickaelWalter](https://twitter.com/MickaelWalter)).
 
+## Supported NAND modes/target platforms
+1. ATMEL PMECC (BCH)
+2. NXP i.MX28 (BCH)
+3. NXP P1014 (BCH)
+4. YAFFS2 (Hamming code, experimental)
+
 ## Installation
 
 The NAND Dump Tools can be downloaded and installed in the following way:
