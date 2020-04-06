@@ -5,7 +5,7 @@
   NAND Dump Decoder
 
   Simple software tool for decoding raw dumps of NAND memory chips using
-  implemented error correcting codes (ECC) like BCH
+  implemented error correcting codes (ECC) like BCH or Hamming codes
   by Matthias Deeg <matthias.deeg@syss.de>
 
   based on PMECC reader and decoder by Mickaël Walter
@@ -37,7 +37,7 @@
   SOFTWARE.
 """
 
-__version__ = '0.2'
+__version__ = '0.2.1'
 __author__ = 'Matthias Deeg, Moritz Lottermann'
 
 import argparse
@@ -47,6 +47,8 @@ import mmap
 import os
 import struct
 import sys
+
+from yaffs_ecc import yaffs_extract_ecc, yaffs_calc_ecc_256, yaffs_ecc_correct
 
 #  BCH polynom
 ECC_POLY1 = 0x201b       # 8219
@@ -1009,6 +1011,222 @@ def nxp_p1014_error_correction(infiles, outfile, config):
                   bad_sector_count, bad_sector_percentage,
                   corrected_sector_count, corrected_sector_percentage))
 
+
+def yaffs_error_correction(infiles, outfile, config):
+    """Do some error correction"""
+
+    # open output file
+    fout = open(outfile, "wb")
+
+    # initialize some variables
+    processed_sector_count = 0
+    corrected_sector_count = 0
+    uncorrected_sector_count = 0
+    good_sector_count = 0
+    bad_sector_count = 0
+    blank_page_count = 0
+    bad_block_count = 0
+    total_page_count = config['filesize'] // config['fullpagesize']
+    sectors_per_page = config['pagesize'] // config['sectorsize']
+    total_sectors = total_page_count * sectors_per_page
+    page_size = config['pagesize']
+    block_size_bytes = config['fullpagesize'] * config['blocksize']
+    total_blocks = config['filesize'] // block_size_bytes
+
+    # blank page data
+    blank_page = b'\xff' * config['fullpagesize']
+
+    # bad block offsets (YAFFS2)
+    # bb_offset1 = config['pagesize']
+
+    # work with input files
+    input_file_handles = []
+    input_file_index = 0
+    for f in infiles:
+        input_file_handles.append(open(f, "r+b"))
+
+    # memory-map the input files
+    input_file_mmaps = []
+    for fin in input_file_handles:
+        input_file_mmaps.append(mmap.mmap(fin.fileno(), 0))
+
+    # set current input file memory-map
+    mm = input_file_mmaps[input_file_index]
+
+    # with open(infile, "rb") as fin:
+    print("[*] Starting error correcting process ...")
+
+    for block in range(total_blocks):
+        # read current block data
+        # fin.seek(block * block_size_bytes)
+        # block_data = fin.read(block_size_bytes)
+
+        start_block = block * block_size_bytes
+        end_block = start_block + block_size_bytes
+        block_data = mm[start_block:end_block]
+
+        # bad block logic for YAFFS2 has to be added
+
+        # 1st page bad block marker
+        # b1 = block_data[bb_offset1]
+
+        # if b1 != 0xff:
+            # increment bad block counter
+            # bad_block_count += 1
+            # continue
+
+        # process pages in block
+        for page in range(config['blocksize']):
+            start_page = page * config['fullpagesize']
+            end_page = start_page + config['fullpagesize']
+            page_data = block_data[start_page:end_page]
+
+            # extract ECCs for all sectors from spare area
+            read_ecc = yaffs_extract_ecc(page_data[config['pagesize']:],
+                                         config['ecc_bytes_per_sector'],
+                                         sectors_per_page)
+
+            # check if page is blank
+            if page_data == blank_page or len(read_ecc) == 0:
+                # increment blank page counter
+                blank_page_count += 1
+
+                # increment good sector counter
+                good_sector_count += sectors_per_page
+
+                # increment count of processed sectors
+                processed_sector_count += sectors_per_page
+
+                # write blank page to output file
+                fout.write(blank_page[:page_size])
+
+                # show some statistics during processing all sectors
+                progress = processed_sector_count / total_sectors * 100
+                print("\r    Progress: {:.2f}% ({}/{} sectors)"
+                      .format(progress, processed_sector_count,
+                              total_sectors), end="")
+                continue
+
+            # process sectors in page
+            for sector in range(sectors_per_page):
+                # initialize bad sector flag
+                bad_sector = False
+
+                # increment count of processed sectors
+                processed_sector_count += 1
+
+                # use all input files, if required (early exit condition)
+                for mmin in input_file_mmaps:
+                    # read page of current memory-map
+                    start_page = start_block + page * config['fullpagesize']
+                    end_page = start_page + config['fullpagesize']
+                    page_data = mmin[start_page:end_page]
+
+                    # get data of current sector
+                    start_data = sector * config['sectorsize']
+                    end_data = start_data + config['sectorsize']
+                    sector_data = page_data[start_data:end_data]
+
+                    # calculate ECC
+                    test_ecc = yaffs_calc_ecc_256(sector_data)
+                    corrected = yaffs_ecc_correct(sector_data, read_ecc[sector], test_ecc)
+
+                    if corrected[0] == 1:
+                        # correctable single bit error
+                        corrected_sector_count += 1
+
+                        # write corrected sector data to output file
+                        fout.write(bytes(corrected[1]))
+
+                        # increment good sector count
+                        good_sector_count += 1
+
+                        # clear bad sector flag
+                        bad_sector = False
+
+                        # early exit if we have a good sector
+                        break
+
+                    elif corrected[0] == 0:
+                        # write corrected sector data to output file
+                        fout.write(bytes(corrected[1]))
+
+                        # increment good sector count
+                        good_sector_count += 1
+
+                        # clear bad sector flag
+                        bad_sector = False
+
+                        # early exit if we have a good sector
+                        break
+
+                    else:
+                        # set bad sector flag
+                        bad_sector = True
+
+                        # increment uncorrected sector count
+                        uncorrected_sector_count += 1
+
+                # check if the sector was corrupted in all input files
+                if bad_sector:
+                    # write corrupted sector data to output file
+                    fout.write(corrected[1])
+
+                    # increment bad sector count
+                    bad_sector_count += 1
+
+        # show some statistics during processing all sectors
+        progress = processed_sector_count / total_sectors * 100
+        print("\r    Progress: {:.2f}% ({}/{} sectors)"
+              .format(progress, processed_sector_count, total_sectors), end="")
+
+    # close output file
+    fout.close()
+
+    # close memory-maps
+    for mm in input_file_mmaps:
+        mm.close()
+
+    # close input files
+    for f in input_file_handles:
+        f.close()
+
+    # show some statistics at the end
+    good_sector_percentage = good_sector_count / total_sectors * 100
+    bad_sector_percentage = bad_sector_count / total_sectors * 100
+    corrected_sector_percentage = corrected_sector_count / total_sectors * 100
+    blank_page_percentage = blank_page_count / total_page_count * 100
+    blank_sector_count = blank_page_count * sectors_per_page
+    blank_sector_percentage = blank_sector_count / total_sectors * 100
+    good_data_sector_count = good_sector_count - blank_sector_count
+    good_data_sector_percentage = good_data_sector_count / total_sectors * 100
+    data_sector_count = good_data_sector_count + bad_sector_count
+    data_sector_percentage = data_sector_count / total_sectors * 100
+
+    print("\n[*] Completed error correcting process")
+    print("    Successfully written {} bytes of data to output file '{}'"
+          .format(config['sectorsize'] * total_sectors, outfile))
+    print("    -----\n    Some statistics\n"
+          "    Total pages:        {}\n"
+          "    Blank pages:        {} ({:.2f}%)\n"
+          "    Blank sectors:      {} ({:.2f}%)\n"
+          "    Data sectors:       {} ({:.2f}%)\n"
+          "    Total sectors:      {}\n"
+          "    Valid sectors:      {} ({:.2f}%)\n"
+          "    Valid data sectors: {} ({:.2f}%)\n"
+          "    Corrupted sectors:  {} ({:.2f}%)\n"
+          "    Corrected sectors:  {} ({:.2f}%)\n"
+          "    Bad blocks:         {}"
+          .format(total_page_count, blank_page_count, blank_page_percentage,
+                  blank_sector_count, blank_sector_percentage,
+                  data_sector_count, data_sector_percentage,
+                  total_sectors, good_sector_count, good_sector_percentage,
+                  good_data_sector_count, good_data_sector_percentage,
+                  bad_sector_count, bad_sector_percentage,
+                  corrected_sector_count, corrected_sector_percentage,
+                  bad_block_count))
+
+
 def show_config(config):
     """Show configuration"""
 
@@ -1052,7 +1270,8 @@ def banner():
 NAND_LAYOUT = {
             "ATMEL": atmel_error_correction,
             "NXP_IMX28": nxp_imx28_error_correction,
-            "NXP_P1014": nxp_p1014_error_correction
+            "NXP_P1014": nxp_p1014_error_correction,
+            "YAFFS2": yaffs_error_correction            # experimental support
         }
 
 
@@ -1066,7 +1285,7 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--infolder', type=str, help='Input folder with binary dump files (.bin)', required=True)
     parser.add_argument('-o', '--outfile', type=str, help='Output dump file', required=True)
     parser.add_argument('-c', '--config', type=str, help='Configuration file')
-    parser.add_argument('-m', '--mode', type=str, help='Vendor specific NAND mode (ATMEL, NXP_IMX28')
+    parser.add_argument('-m', '--mode', type=str, help='Vendor specific NAND mode (ATMEL, NXP_IMX28, NXP_P1014, YAFFS2 [experimental])')
     parser.add_argument('--atmel-config', action="store_true", help='Retrieve ATMEL config from first page of the dump file')
     parser.add_argument('--nxp-fcb-config', action="store_true", help='Retrieve NXP config from firmware control block (FCB) of first page of the dump file')
 
