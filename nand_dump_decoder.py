@@ -1373,9 +1373,14 @@ if __name__ == '__main__':
 
     else:
         # read configuration from given config file
-        if not os.path.isfile(args.config):
+        try:
+            if not os.path.isfile(args.config):
+              print("[-] Error: Config file '{}' does not exist".format(args.config))
+              sys.exit(1)
+        except:
             print("[-] Error: Config file '{}' does not exist".format(args.config))
             sys.exit(1)
+
 
         print("[*] Read configuration file '{}'".format(args.config))
         configfile = configparser.ConfigParser()
